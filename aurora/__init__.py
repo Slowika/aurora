@@ -14,6 +14,7 @@ from aurora.model.aurora import (
     AuroraV1p5Ensemble,
     AuroraWave,
 )
+from aurora.model.swin3d import Swin3DBlockAdapter, Swin3DResidualAdapter
 from aurora.rollout import rollout
 from aurora.tracker import Tracker
 
@@ -28,6 +29,8 @@ __all__ = [
     "AuroraWave",
     "AuroraV1p5",
     "AuroraV1p5Ensemble",
+    "Swin3DBlockAdapter",
+    "Swin3DResidualAdapter",
     "Batch",
     "Metadata",
     "insolation",
