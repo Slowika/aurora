@@ -9,7 +9,7 @@ Code adapted from
 import itertools
 import warnings
 from functools import lru_cache
-from typing import Optional
+from typing import NamedTuple, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -26,7 +26,26 @@ from aurora.model.util import (
     maybe_adjust_windows,
 )
 
-__all__ = ["Swin3DTransformerBackbone"]
+__all__ = ["Swin3DBlockAdapter", "Swin3DResidualAdapter", "Swin3DTransformerBackbone"]
+
+
+class Swin3DResidualAdapter(NamedTuple):
+    """Per-channel adapter deltas for one residual branch of a Swin block.
+
+    All tensors have shape `(B, D)`. `scale` and `shift` modulate the sublayer input, and `gate`
+    modulates its output before the residual addition. Zero values are the identity transformation.
+    """
+
+    scale: torch.Tensor
+    shift: torch.Tensor
+    gate: torch.Tensor
+
+
+class Swin3DBlockAdapter(NamedTuple):
+    """Adapter values for the attention and MLP residual branches of one Swin block."""
+
+    attention: Swin3DResidualAdapter
+    mlp: Swin3DResidualAdapter
 
 
 class MLP(nn.Module):
@@ -451,6 +470,24 @@ class Swin3DTransformerBlock(nn.Module):
             drop=drop,
         )
 
+    def _prepare_adapter(
+        self,
+        x: torch.Tensor,
+        adapter: Swin3DResidualAdapter,
+        branch: str,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        expected_shape = (x.shape[0], self.dim)
+        values: list[torch.Tensor] = []
+        for name, value in zip(adapter._fields, adapter):
+            if value.shape != expected_shape:
+                raise ValueError(
+                    f"Expected `{branch}.{name}` with shape {expected_shape}, but got "
+                    f"{tuple(value.shape)}."
+                )
+            values.append(value.to(x).unsqueeze(1))
+
+        return values[0], values[1], values[2]
+
     def forward(
         self,
         x: torch.Tensor,
@@ -458,6 +495,7 @@ class Swin3DTransformerBlock(nn.Module):
         res: tuple[int, int, int],
         rollout_step: int,
         warped: bool = True,
+        adapter: Swin3DBlockAdapter | None = None,
     ) -> torch.Tensor:
         """Run the block.
 
@@ -467,6 +505,8 @@ class Swin3DTransformerBlock(nn.Module):
             res (tuple[int, int, int]): Resolution of the input `x`.
             rollout_step (int): Roll-out step.
             warped (bool, optional): Connect the left and right sides. Defaults to `True`.
+            adapter (Swin3DBlockAdapter, optional): Per-channel scale, shift, and gate deltas for
+                the attention and MLP residual branches. Defaults to no adaptation.
 
         Returns:
             torch.Tensor: Output tokens.
@@ -475,10 +515,19 @@ class Swin3DTransformerBlock(nn.Module):
         B, L, D = x.shape
         assert L == C * H * W, f"Wrong feature size: {L} vs {C}x{H}x{W}={C*H*W}"
 
+        attention_adapter = None
+        mlp_adapter = None
+        if adapter is not None:
+            attention_adapter = self._prepare_adapter(x, adapter.attention, "attention")
+            mlp_adapter = self._prepare_adapter(x, adapter.mlp, "mlp")
+
         # If the window size is larger than the input resolution, we do not partition windows.
         ws, ss = maybe_adjust_windows(self.window_size, self.shift_size, res)
 
         shortcut = x
+        if attention_adapter is not None:
+            scale, shift, _ = attention_adapter
+            x = x * (1 + scale) + shift
         x = x.view(B, C, H, W, D)
 
         # Perform cyclic shift.
@@ -518,8 +567,19 @@ class Swin3DTransformerBlock(nn.Module):
 
         x = x.reshape(B, C * H * W, D)
 
-        x = shortcut + self.drop_path(self.norm1(x, c))
-        x = x + self.drop_path(self.norm2(self.mlp(x), c))
+        attention_output = self.norm1(x, c)
+        if attention_adapter is not None:
+            attention_output = attention_output * (1 + attention_adapter[2])
+        x = shortcut + self.drop_path(attention_output)
+
+        mlp_input = x
+        if mlp_adapter is not None:
+            scale, shift, _ = mlp_adapter
+            mlp_input = mlp_input * (1 + scale) + shift
+        mlp_output = self.norm2(self.mlp(mlp_input), c)
+        if mlp_adapter is not None:
+            mlp_output = mlp_output * (1 + mlp_adapter[2])
+        x = x + self.drop_path(mlp_output)
         return x
 
 
@@ -736,6 +796,7 @@ class BasicLayer3D(nn.Module):
         res: tuple[int, int, int],
         crop: tuple[int, int, int] = (0, 0, 0),
         rollout_step: int = 0,
+        adapters: Sequence[Swin3DBlockAdapter] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Run the basic layer.
 
@@ -745,12 +806,20 @@ class BasicLayer3D(nn.Module):
             res (tuple[int, int, int]): Resolution of the input `x`.
             crop (tuple[int, int, int]): Cropping for every dimension.
             rollout_step (int): Roll-out step.
+            adapters (sequence of Swin3DBlockAdapter, optional): One adapter for every block in
+                this layer. Defaults to no adaptation.
 
         Returns:
             torch.Tensor: Output tokens.
         """
-        for blk in self.blocks:
-            x = blk(x, c, res, rollout_step)
+        if adapters is not None and len(adapters) != len(self.blocks):
+            raise ValueError(
+                f"Expected {len(self.blocks)} block adapters, but got {len(adapters)}."
+            )
+
+        for index, blk in enumerate(self.blocks):
+            adapter = None if adapters is None else adapters[index]
+            x = blk(x, c, res, rollout_step, adapter=adapter)
         if self.downsample is not None:
             x_scaled = self.downsample(x, res)
             return x_scaled, x
@@ -917,6 +986,15 @@ class Swin3DTransformerBackbone(nn.Module):
         for bly in self.decoder_layers:
             bly.init_respostnorm()
 
+    @property
+    def adapter_dims(self) -> tuple[int, ...]:
+        """Embedding dimension of every block in backbone execution order.
+
+        Encoder blocks come first, followed by decoder blocks.
+        """
+        layers = itertools.chain(self.encoder_layers, self.decoder_layers)
+        return tuple(block.dim for layer in layers for block in layer.blocks)
+
     def reset_noise(self) -> None:
         """Flush the noise cache.
 
@@ -968,6 +1046,7 @@ class Swin3DTransformerBackbone(nn.Module):
         lead_times: torch.Tensor,
         rollout_step: int,
         patch_res: tuple[int, int, int],
+        backbone_adapters: Sequence[Swin3DBlockAdapter] | None = None,
     ) -> torch.Tensor:
         """Run the backbone.
 
@@ -976,12 +1055,20 @@ class Swin3DTransformerBackbone(nn.Module):
             lead_times (torch.Tensor): Lead times of shape `(batch,)` in hours.
             rollout_step (int): Roll-out step.
             patch_res (tuple[int, int, int]): Patch resolution of the form `(C, H, W)`.
+            backbone_adapters (sequence of Swin3DBlockAdapter, optional): One adapter for every
+                block, ordered as :attr:`adapter_dims`. Defaults to no adaptation.
 
         Returns:
             torch.Tensor: Output tokens of shape `(B, L, D)`.
         """
         _msg = "Input shape does not match patch size."
         assert x.shape[1] == patch_res[0] * patch_res[1] * patch_res[2], _msg
+
+        if backbone_adapters is not None and len(backbone_adapters) != len(self.adapter_dims):
+            raise ValueError(
+                f"Expected {len(self.adapter_dims)} block adapters, but got "
+                f"{len(backbone_adapters)}."
+            )
 
         # It's costly to pad across the level dimension, so we should not even though our model
         # supports it.
@@ -1026,21 +1113,41 @@ class Swin3DTransformerBackbone(nn.Module):
         skips = []
         # Saved contexts at higher resolutions to be reused in the backbone U-Net decoder
         saved_cs = []
+        adapter_index = 0
         for i, layer in enumerate(self.encoder_layers):
             saved_cs.append(c)
-            x, x_unscaled = layer(x, c, all_enc_res[i], rollout_step=rollout_step)
+            layer_adapters = None
+            if backbone_adapters is not None:
+                layer_adapters = backbone_adapters[
+                    adapter_index : adapter_index + layer.depth
+                ]
+                adapter_index += layer.depth
+            x, x_unscaled = layer(
+                x,
+                c,
+                all_enc_res[i],
+                rollout_step=rollout_step,
+                adapters=layer_adapters,
+            )
             # There should be a `context_down_layer` for every encoder layer except the last.
             if self.stochastic and i < self.num_encoder_layers - 1:
                 c = self.context_down_layers[i](c, all_enc_res[i])
             skips.append(x_unscaled)
         for i, layer in enumerate(self.decoder_layers):
             index = self.num_decoder_layers - i - 1
+            layer_adapters = None
+            if backbone_adapters is not None:
+                layer_adapters = backbone_adapters[
+                    adapter_index : adapter_index + layer.depth
+                ]
+                adapter_index += layer.depth
             x, _ = layer(
                 x,
                 c,
                 all_enc_res[index],
                 padded_outs[index - 1],
                 rollout_step=rollout_step,
+                adapters=layer_adapters,
             )
 
             if 0 < i < self.num_decoder_layers - 1:

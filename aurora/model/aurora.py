@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import warnings
 from datetime import timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
@@ -26,7 +26,7 @@ from aurora.model.decoder import Perceiver3DDecoder
 from aurora.model.encoder import Perceiver3DEncoder
 from aurora.model.lora import LoRAMode
 from aurora.model.perceiver import PerceiverAttention
-from aurora.model.swin3d import Swin3DTransformerBackbone, WindowAttention
+from aurora.model.swin3d import Swin3DBlockAdapter, Swin3DTransformerBackbone, WindowAttention
 from aurora.normalisation import log_transform, log_untransform
 
 __all__ = [
@@ -339,7 +339,12 @@ class Aurora(torch.nn.Module):
         """
         self.backbone.set_noise_accumulation(n)
 
-    def forward(self, batch: Batch, lead_times: Optional[torch.Tensor] = None) -> Batch:
+    def forward(
+        self,
+        batch: Batch,
+        lead_times: Optional[torch.Tensor] = None,
+        backbone_adapters: Optional[Sequence[Swin3DBlockAdapter]] = None,
+    ) -> Batch:
         """Forward pass.
 
         Args:
@@ -347,6 +352,8 @@ class Aurora(torch.nn.Module):
             lead_times (:class:`torch.Tensor`, optional): Per-sample lead times of shape
                 `(batch,)` in hours. Required when the model was configured with
                 `variable_lead_time=True`. Ignored otherwise.
+            backbone_adapters (sequence of Swin3DBlockAdapter, optional): Per-block scale, shift,
+                and gate deltas in backbone execution order. Defaults to no adaptation.
 
         Returns:
             :class:`Batch`: Prediction for the batch.
@@ -433,6 +440,7 @@ class Aurora(torch.nn.Module):
                 lead_times=lead_times,
                 patch_res=patch_res,
                 rollout_step=batch.metadata.rollout_step,
+                backbone_adapters=backbone_adapters,
             )
         with context_decoder:
             pred = self.decoder(
