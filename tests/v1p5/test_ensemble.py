@@ -157,8 +157,7 @@ def test_rollout_ensemble_num_ensemble_members_one_raises():
     model.eval()
     surf_vars = tuple(v for v in _SURF_VARS if v not in _OUTPUT_ONLY_SURF)
     batch = _make_batch(surf_vars=surf_vars)
-    b = next(iter(batch.surf_vars.values())).shape[0]
+    _ = next(iter(batch.surf_vars.values())).shape[0]
 
-    with pytest.raises(ValueError):
-        with torch.inference_mode():
-            preds = list(rollout_ensemble(model, batch, steps=2, num_ensemble_members=1))
+    with pytest.raises(ValueError), torch.inference_mode():
+        _ = list(rollout_ensemble(model, batch, steps=2, num_ensemble_members=1))
