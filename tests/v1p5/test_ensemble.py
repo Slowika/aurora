@@ -44,6 +44,10 @@ def test_tile_and_split_batch_roundtrip():
         for k, v in member.atmos_vars.items():
             torch.testing.assert_close(v, batch.atmos_vars[k])
 
+    # `batch` has batch size `b`, which is not divisible by `n`.
+    with pytest.raises(ValueError):
+        split_batch(batch, n)
+
 
 @pytest.mark.parametrize("stochastic", [True, False])
 def test_forward_ensemble(stochastic: bool):
