@@ -100,13 +100,8 @@ def test_rollout_ensemble():
             assert (member1.surf_vars["2t"] - member2.surf_vars["2t"]).abs().mean() > 1e-2
 
 
-def test_rollout_ensemble_num_ensemble_members_one_raises():
-    num_ensemble_members = 1
-    model = _make_small_v1p5()
-    model.eval()
-    surf_vars = tuple(v for v in _SURF_VARS if v not in _OUTPUT_ONLY_SURF)
-    batch = _make_batch(surf_vars=surf_vars)
-    _ = next(iter(batch.surf_vars.values())).shape[0]
-
-    with pytest.raises(ValueError), torch.inference_mode():
-        _ = list(rollout_ensemble(model, batch, steps=2, num_ensemble_members=num_ensemble_members))
+@pytest.mark.parametrize("stochastic, num_ensemble_members", [(True, 0), (False, 3)])
+def test_rollout_ensemble_raises(stochastic: bool, num_ensemble_members: int):
+    model = _make_small_v1p5(stochastic=stochastic)
+    with pytest.raises(ValueError):
+        next(rollout_ensemble(model, _make_batch(), 2, num_ensemble_members))
