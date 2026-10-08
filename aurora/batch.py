@@ -314,8 +314,7 @@ class Batch:
 def tile_batch(batch: Batch, n: int) -> Batch:
     """Tile `batch` along the batch dimension `n` times.
 
-    Used to run `n` ensemble members as a single fused computation.
-    Results derived from the tiling should be undone with `split_batch`.
+    Use `split_batch` to split the tiled batch, or a prediction for it, back into `n` batches.
 
     Args:
         batch (:class:`aurora.Batch`): The batch to tile.
