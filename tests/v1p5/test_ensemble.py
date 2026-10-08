@@ -9,8 +9,7 @@ import pytest
 import torch
 
 from ._helpers import _OUTPUT_ONLY_SURF, _SURF_VARS, BATCH, _make_batch, _make_small_v1p5
-from aurora import Aurora, rollout_ensemble
-from aurora.batch import split_batch, tile_batch
+from aurora import Aurora, rollout_ensemble, split_batch, tile_batch
 from aurora.model.film import AdaptiveLayerNorm
 
 
