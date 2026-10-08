@@ -450,6 +450,7 @@ smoother intra-step transitions while using independent effective noise between 
 matching the training regimen. Set `use_noise_accumulation=False` to draw independent
 noise at each sub-step instead, though this is not recommended.
 
+(internal-ensembling)=
 ### Internal Ensembling
 
 For a stochastic model, such as `AuroraV1p5Ensemble`, you can use `rollout_ensemble` to
