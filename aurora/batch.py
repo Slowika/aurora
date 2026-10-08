@@ -333,16 +333,24 @@ def tile_batch(batch: Batch, n: int) -> Batch:
 
 
 def split_batch(batch: Batch, n: int) -> list[Batch]:
-    """Undo `tile_batch`, splitting a tiled batch back into `n` standard-shaped batches.
+    """Split `batch` into `n` equally sized batches along the batch dimension.
+
+    This undoes `tile_batch`.
 
     Args:
-        batch (:class:`aurora.Batch`): The tiled batch to split.
-        n (int): Number of batches `batch` was tiled into.
+        batch (:class:`aurora.Batch`): The batch to split.
+        n (int): Number of batches to split into.
 
     Returns:
-        list[:class:`aurora.Batch`]: `batch` split into `n` standard-shaped batches.
+        list[:class:`aurora.Batch`]: `batch` split into `n` equally sized batches.
+
+    Raises:
+        ValueError: If the batch size of `batch` is not divisible by `n`.
     """
-    b = next(iter(batch.surf_vars.values())).shape[0] // n
+    batch_size = next(iter(batch.surf_vars.values())).shape[0]
+    b, remainder = divmod(batch_size, n)
+    if remainder != 0:
+        raise ValueError(f"Batch size `{batch_size}` must be divisible by `n = {n}`.")
     time = batch.metadata.time
     return [
         dataclasses.replace(
