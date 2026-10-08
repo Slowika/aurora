@@ -53,11 +53,7 @@ def test_tile_and_split_batch_roundtrip():
 def test_forward_ensemble(stochastic: bool):
     torch.manual_seed(0)
     model = _make_small_v1p5(stochastic=stochastic)
-    # Un-zero the modulation so noise has a real, appreciable effect (see helper docstring);
-    # otherwise this test cannot distinguish genuine noise sensitivity from incidental
-    # floating-point batching noise
-    # (see `test_forward_ensemble_members_identical_without_stochastic`).
-    _unzero_adaptive_layer_norms(model)
+    _unzero_adaptive_layer_norms(model)  # Otherwise, the noise has no effect on the output.
     model.eval()
     surf_vars = tuple(v for v in _SURF_VARS if v not in _OUTPUT_ONLY_SURF)
     batch = _make_batch(surf_vars=surf_vars)
