@@ -466,9 +466,8 @@ with torch.inference_mode():
     ]
 ```
 
-Alternatively, you can produce an ensemble forecast by calling `rollout` multiple times,
-once for each ensemble member.
-`rollout_ensemble` can be faster, at the cost of requiring more memory.
+Alternatively, you can produce an ensemble forecast by calling `rollout` multiple times, once for
+every ensemble member. `rollout_ensemble` can be faster, at the cost of requiring more memory.
 
-Internally, `rollout_ensemble` use `aurora.tile_batch` and `aurora.split_batch`.
-These functions can also be used for fused forward passes.
+Internally, `rollout_ensemble` uses `aurora.tile_batch` and `aurora.split_batch`. You can also use
+these functions to run multiple ensemble members in a single forward pass.
